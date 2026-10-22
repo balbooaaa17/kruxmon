@@ -2,6 +2,8 @@
 
 A lightweight, read-only Linux CPU, process, disk and thermal monitoring TUI. It uses a near-black background with muted borders, warm amber accents, green healthy states, and red warnings.
 
+![KruxMon screenshot](kruxmon.png)
+
 ## Current features
 - Overall CPU utilization and per-core usage (computed from `/proc/stat` deltas)
 - CPU frequency, scaling governor, and boost state when exported by the kernel
