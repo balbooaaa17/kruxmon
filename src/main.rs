@@ -58,6 +58,12 @@ struct Disk {
     avail: String,
     pct: u16,
 }
+#[derive(Default, Clone)]
+struct PackageUpdate {
+    name: String,
+    current: String,
+    available: String,
+}
 #[derive(Default)]
 struct Snapshot {
     cpu: u16,
@@ -76,6 +82,8 @@ struct Snapshot {
     battery: Option<String>,
     disks: Vec<Disk>,
     processes: Vec<ProcessInfo>,
+    package_updates: Vec<PackageUpdate>,
+    package_status: String,
 }
 struct App {
     previous_cpu: Vec<CpuTimes>,
@@ -83,6 +91,7 @@ struct App {
     cpu_history: Vec<u64>,
     snap: Snapshot,
     last_sample: Instant,
+    last_package_check: Instant,
 }
 impl App {
     fn new() -> Self {
@@ -92,6 +101,7 @@ impl App {
             cpu_history: vec![0; 60],
             snap: Snapshot::default(),
             last_sample: Instant::now(),
+            last_package_check: Instant::now() - Duration::from_secs(3600),
         };
         a.sample();
         a
@@ -158,6 +168,12 @@ impl App {
         self.snap.disks = read_disks();
         self.snap.processes = read_processes(&self.previous_processes, total_delta);
         self.previous_processes = read_process_ticks();
+        if self.last_package_check.elapsed() >= Duration::from_secs(60) {
+            let (updates, status) = read_package_updates();
+            self.snap.package_updates = updates;
+            self.snap.package_status = status;
+            self.last_package_check = Instant::now();
+        }
         self.last_sample = Instant::now();
     }
     fn read_memory(&mut self) {
@@ -374,6 +390,43 @@ fn read_disks() -> Vec<Disk> {
     disks.truncate(8);
     disks
 }
+
+fn read_package_updates() -> (Vec<PackageUpdate>, String) {
+    // `pacman -Qu` only compares installed packages against the existing sync databases;
+    // it does not refresh databases, install packages, or require root privileges.
+    let output = match Command::new("pacman").args(["-Qu"]).output() {
+        Ok(output) => output,
+        Err(_) => return (Vec::new(), "pacman not available".into()),
+    };
+    if !output.status.success() {
+        return (Vec::new(), "could not query package database".into());
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut updates = Vec::new();
+    for line in stdout.lines() {
+        // pacman -Qu format: package old_version -> new_version
+        let Some((left, available)) = line.split_once(" -> ") else {
+            continue;
+        };
+        let mut parts = left.split_whitespace();
+        let Some(name) = parts.next() else { continue };
+        let Some(current) = parts.next() else {
+            continue;
+        };
+        updates.push(PackageUpdate {
+            name: name.into(),
+            current: current.into(),
+            available: available.trim().into(),
+        });
+    }
+    let status = if updates.is_empty() {
+        "system up to date".into()
+    } else {
+        format!("{} updates available", updates.len())
+    };
+    (updates, status)
+}
+
 fn failed_units() -> Vec<String> {
     let out = Command::new("systemctl")
         .args(["--failed", "--no-legend", "--plain"])
@@ -611,6 +664,10 @@ fn draw(f: &mut ratatui::Frame, app: &App) {
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(5), Constraint::Min(7)])
         .split(middle[0]);
+    let left_bottom = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Percentage(62), Constraint::Min(5)])
+        .split(left[1]);
     let right = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -675,7 +732,48 @@ fn draw(f: &mut ratatui::Frame, app: &App) {
     )
     .column_spacing(1)
     .block(box_block("TOP PROCESSES · CPU"));
-    f.render_widget(proc_table, left[1]);
+    f.render_widget(proc_table, left_bottom[0]);
+
+    let update_lines: Vec<Line> = if app.snap.package_updates.is_empty() {
+        vec![Line::from(Span::styled(
+            format!(" {}", app.snap.package_status),
+            Style::default().fg(if app.snap.package_status == "system up to date" {
+                GREEN
+            } else {
+                MUTED
+            }),
+        ))]
+    } else {
+        let mut lines = vec![Line::from(Span::styled(
+            format!(" {}", app.snap.package_status),
+            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+        ))];
+        lines.extend(app.snap.package_updates.iter().take(15).map(|p| {
+            Line::from(vec![
+                Span::styled(
+                    format!(" {:<18}", p.name.chars().take(18).collect::<String>()),
+                    Style::default().fg(FG),
+                ),
+                Span::styled(
+                    format!("{} → {}", p.current, p.available),
+                    Style::default().fg(MUTED),
+                ),
+            ])
+        }));
+        if app.snap.package_updates.len() > 4 {
+            lines.push(Line::from(Span::styled(
+                format!(" + {} more", app.snap.package_updates.len() - 15),
+                Style::default().fg(MUTED),
+            )));
+        }
+        lines
+    };
+    f.render_widget(
+        Paragraph::new(update_lines)
+            .wrap(Wrap { trim: true })
+            .block(box_block("UPDATE PACKAGES · PACMAN -Qu")),
+        left_bottom[1],
+    );
 
     let disk_rows = app.snap.disks.iter().map(|d| {
         let c = if d.pct >= 90 {
