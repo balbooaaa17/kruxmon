@@ -1,0 +1,10 @@
+[package]
+name = "kruxmon"
+version = "0.2.0"
+edition = "2021"
+description = "A lightweight Linux system and CPU health TUI"
+license = "MIT"
+
+[dependencies]
+crossterm = "0.28"
+ratatui = "0.29"
