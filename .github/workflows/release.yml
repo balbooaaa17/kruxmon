@@ -7,6 +7,11 @@ on:
     tags:
       - "v*"
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Version tag to publish (e.g. v0.1.0); leave blank for a development build"
+        required: false
+        type: string
 
 permissions:
   contents: write
